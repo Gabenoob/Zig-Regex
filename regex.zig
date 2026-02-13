@@ -1,9 +1,9 @@
 const regex = @import("src/regex.zig");
 
 pub const Regex = regex.Regex;
-pub const Match = match.Match;
-pub const Group = match.Group;
-pub const SubResult = match.SubResult;
+pub const Match = @import("src/match.zig").Match;
+pub const Group = @import("src/match.zig").Group;
+pub const SubResult = @import("src/match.zig").SubResult;
 pub const RegexFlags = regex.RegexFlags;
 
 pub const RegexError = regex.RegexError;
