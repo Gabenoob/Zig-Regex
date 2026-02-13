@@ -1,0 +1,13 @@
+.{
+    .name = .re,
+    .version = "0.1.0",
+    .minimum_zig_version = "0.15.2",
+    .paths = .{
+        "build.zig",
+        "build.zig.zon",
+        "regex.zig",
+        "src/",
+        "examples/",
+    },
+    .fingerprint = 0x61089c5cd11dd40f,
+}
