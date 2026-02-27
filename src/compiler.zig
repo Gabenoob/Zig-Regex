@@ -81,11 +81,38 @@ pub const Instruction = union(enum) {
     }
 };
 
+/// Cached pattern analysis for fast path optimization
+pub const PatternAnalysis = struct {
+    has_prefix: bool = false,
+    prefix_start: usize = 0,
+    prefix_len: usize = 0,
+    prefix_buf: [256]u8 = undefined,
+    
+    has_suffix: bool = false,
+    suffix_start: usize = 0,
+    suffix_len: usize = 0,
+    suffix_buf: [256]u8 = undefined,
+    
+    has_greedy_dotstar: bool = false,
+    is_simple_literal: bool = false,
+    
+    pub fn getPrefixSlice(self: PatternAnalysis) ?[]const u8 {
+        if (!self.has_prefix or self.prefix_len == 0) return null;
+        return self.prefix_buf[0..self.prefix_len];
+    }
+    
+    pub fn getSuffixSlice(self: PatternAnalysis) ?[]const u8 {
+        if (!self.has_suffix or self.suffix_len == 0) return null;
+        return self.suffix_buf[0..self.suffix_len];
+    }
+};
+
 /// Compiled regex program
 pub const CompiledRegex = struct {
     instructions: []Instruction,
     capture_groups: u32,
     allocator: std.mem.Allocator,
+    analysis: PatternAnalysis,
 
     pub fn deinit(self: *CompiledRegex) void {
         self.allocator.free(self.instructions);
@@ -371,31 +398,107 @@ fn countCaptureGroups(node: ASTNode) u32 {
     }
 }
 
+/// Analyze compiled pattern for optimizations
+fn analyzePattern(instructions: []const Instruction) PatternAnalysis {
+    var analysis = PatternAnalysis{};
+    if (instructions.len < 2) return analysis;
+    
+    // Find prefix (Chars after initial Save)
+    var i: usize = 0;
+    if (instructions[i] == .Save) i += 1;
+    
+    const prefix_start = i;
+    while (i < instructions.len and instructions[i] == .Char) i += 1;
+    const prefix_len = i - prefix_start;
+    
+    if (prefix_len >= 3 and prefix_len <= 256) {
+        analysis.has_prefix = true;
+        analysis.prefix_start = prefix_start;
+        analysis.prefix_len = prefix_len;
+        for (0..prefix_len) |j| analysis.prefix_buf[j] = instructions[prefix_start + j].Char;
+    }
+    
+    // Find suffix (Chars before final Save+Match)
+    if (instructions.len < 2) return analysis;
+    var end = instructions.len - 1;
+    if (instructions[end] == .Match and end > 0) end -= 1;
+    if (instructions[end] == .Save and end > 0) end -= 1;
+    
+    const suffix_end = end;
+    var char_count: usize = 0;
+    while (end > 0) {
+        if (instructions[end] == .Char) {
+            char_count += 1;
+            if (end == 0) break;
+            end -= 1;
+        } else break;
+    }
+    
+    if (char_count >= 3 and char_count <= 256 and char_count <= suffix_end + 1) {
+        analysis.has_suffix = true;
+        analysis.suffix_start = suffix_end - char_count + 1;
+        analysis.suffix_len = char_count;
+        for (0..char_count) |j| analysis.suffix_buf[j] = instructions[analysis.suffix_start + j].Char;
+    }
+    
+    // Check for greedy dotstar between prefix and suffix
+    if (analysis.has_prefix and analysis.has_suffix and analysis.suffix_start > analysis.prefix_start + prefix_len) {
+        analysis.has_greedy_dotstar = detectDotStar(instructions, analysis.prefix_start + prefix_len, analysis.suffix_start);
+    }
+    
+    // Check for simple literal (only prefix, no other features)
+    if (analysis.has_prefix and !analysis.has_suffix and 
+        prefix_start == 1 and prefix_len + 2 == instructions.len) {
+        analysis.is_simple_literal = true;
+    }
+    
+    return analysis;
+}
+
+/// Detect greedy .* or .+ pattern
+fn detectDotStar(instructions: []const Instruction, start: usize, end_pos: usize) bool {
+    if (end_pos <= start) return false;
+    var i = start;
+    
+    // Handle optional: Split, Save
+    if (i < instructions.len and instructions[i] == .Split) {
+        if (i + 1 < instructions.len and instructions[i + 1] == .Save) i += 2;
+    }
+    
+    // Skip Save
+    while (i < instructions.len and instructions[i] == .Save) i += 1;
+    
+    if (i >= end_pos or instructions[i] != .Split) return false;
+    i += 1;
+    
+    if (i >= end_pos or (instructions[i] != .Any and instructions[i] != .Class)) return false;
+    i += 1;
+    
+    if (i >= end_pos or instructions[i] != .Jump) return false;
+    
+    return true;
+}
+
 /// Main compile function - takes AST and produces CompiledRegex
 pub fn compile(allocator: std.mem.Allocator, ast: ASTNode) !CompiledRegex {
     var compiler = Compiler.init(allocator);
     errdefer compiler.deinit();
 
-    // Count capture groups
     const capture_groups = countCaptureGroups(ast);
 
-    // Emit entry point that wraps the entire match in group 0
-    try compiler.emit(.{ .Save = 0 }); // Save 0 = start of full match
-
-    // Compile the AST
+    try compiler.emit(.{ .Save = 0 });
     try compileNode(&compiler, ast);
-
-    // Emit end of group 0 and match success
-    try compiler.emit(.{ .Save = 1 }); // Save 1 = end of full match
+    try compiler.emit(.{ .Save = 1 });
     try compiler.emit(.Match);
 
-    // Move instructions to heap
     const instructions = try compiler.instructions.toOwnedSlice(allocator);
+    const analysis = analyzePattern(instructions);
 
     return CompiledRegex{
         .instructions = instructions,
-        .capture_groups = capture_groups + 1, // +1 for group 0 (full match)
+        .capture_groups = capture_groups + 1,
         .allocator = allocator,
+        .analysis = analysis,
     };
 }
 
