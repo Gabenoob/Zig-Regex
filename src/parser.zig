@@ -211,7 +211,91 @@ const Tokenizer = struct {
     }
 };
 
-/// Parser state
+/// Parse a regex pattern and return the AST root node
+/// Uses an arena allocator internally to prevent memory leaks on error
+pub fn parse(pattern: []const u8, parent_allocator: Allocator) ParserError!*Node {
+    // Create an arena for parsing - all allocations happen here
+    var arena = std.heap.ArenaAllocator.init(parent_allocator);
+    defer arena.deinit();
+    
+    var parser = try Parser.init(pattern, arena.allocator());
+    const result = parser.parse();
+    
+    if (result) |node| {
+        // Success - we need to clone the result to the parent allocator
+        // since we're about to destroy the arena
+        const cloned = try cloneNode(node, parent_allocator);
+        return cloned;
+    } else |err| {
+        // Error - arena will be cleaned up automatically by defer
+        return err;
+    }
+}
+
+/// Clone a node tree to a new allocator
+fn cloneNode(node: *Node, allocator: Allocator) !*Node {
+    const new_node = try allocator.create(Node);
+    errdefer allocator.destroy(new_node);
+    
+    switch (node.*) {
+        .Literal => |c| {
+            new_node.* = .{ .Literal = c };
+        },
+        .Any => {
+            new_node.* = .Any;
+        },
+        .Anchor => |a| {
+            new_node.* = .{ .Anchor = a };
+        },
+        .Backreference => |b| {
+            new_node.* = .{ .Backreference = b };
+        },
+        .Concat => |c| {
+            const left = try cloneNode(c.left, allocator);
+            errdefer left.deinit(allocator);
+            const right = try cloneNode(c.right, allocator);
+            new_node.* = .{ .Concat = .{ .left = left, .right = right } };
+        },
+        .Alternate => |a| {
+            const left = try cloneNode(a.left, allocator);
+            errdefer left.deinit(allocator);
+            const right = try cloneNode(a.right, allocator);
+            new_node.* = .{ .Alternate = .{ .left = left, .right = right } };
+        },
+        .Quantifier => |q| {
+            const child = try cloneNode(q.child, allocator);
+            new_node.* = .{ .Quantifier = .{
+                .child = child,
+                .min = q.min,
+                .max = q.max,
+                .greedy = q.greedy,
+            } };
+        },
+        .Group => |g| {
+            const child = try cloneNode(g.child, allocator);
+            const name = if (g.name) |n| try allocator.dupe(u8, n) else null;
+            errdefer if (name) |n| allocator.free(n);
+            new_node.* = .{ .Group = .{
+                .child = child,
+                .index = g.index,
+                .name = name,
+            } };
+        },
+        .CharacterClass => |cc| {
+            const ranges = try allocator.alloc(CharRange, cc.ranges.len);
+            errdefer allocator.free(ranges);
+            @memcpy(ranges, cc.ranges);
+            new_node.* = .{ .CharacterClass = .{
+                .ranges = ranges,
+                .negated = cc.negated,
+            } };
+        },
+    }
+    
+    return new_node;
+}
+
+/// Parser state - uses arena allocator internally
 const Parser = struct {
     tokenizer: Tokenizer,
     current: Token,
@@ -235,7 +319,11 @@ const Parser = struct {
 
     fn expect(self: *Parser, token_type: TokenType) !void {
         if (self.current.type != token_type) {
-            return ParserError.InvalidPattern;
+            return switch (token_type) {
+                .CloseParen => ParserError.UnmatchedParenthesis,
+                .CloseBracket => ParserError.UnmatchedBracket,
+                else => ParserError.InvalidPattern,
+            };
         }
         self.advance();
     }
@@ -710,12 +798,6 @@ const Parser = struct {
         return node;
     }
 };
-
-/// Parse a regex pattern and return the AST root node
-pub fn parse(pattern: []const u8, allocator: Allocator) ParserError!*Node {
-    var p = try Parser.init(pattern, allocator);
-    return try p.parse();
-}
 
 /// Get the number of capture groups in a pattern
 pub fn countGroups(pattern: []const u8) ParserError!u32 {
