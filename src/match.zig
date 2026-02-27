@@ -1,13 +1,32 @@
 const std = @import("std");
 
 /// Regular expression compilation and matching flags
+///
+/// Use these flags to control regex behavior:
+/// - `ignore_case`: Case-insensitive matching (i flag)
+/// - `multiline`: ^ and $ match line boundaries (m flag)
+/// - `dotall`: . matches newlines (s flag)
+/// - `verbose`: Ignore whitespace in patterns (x flag)
+/// - `unicode`: Enable Unicode support (u flag, default true)
+///
+/// ## Example
+/// ```zig
+/// var flags = RegexFlags{ .ignore_case = true, .multiline = true };
+/// var regex = try Regex.compileWithFlags(allocator, "^hello", flags);
+/// ```
 pub const RegexFlags = packed struct {
-    ignore_case: bool = false, // i flag
-    multiline: bool = false, // m flag (^/$ match line boundaries)
-    dotall: bool = false, // s flag (. matches newlines)
-    verbose: bool = false, // x flag (whitespace ignored)
-    unicode: bool = true, // u flag (unicode support)
+    /// Case-insensitive matching (i flag)
+    ignore_case: bool = false,
+    /// Multiline mode: ^ and $ match line boundaries (m flag)
+    multiline: bool = false,
+    /// Dotall mode: . matches newlines (s flag)
+    dotall: bool = false,
+    /// Verbose mode: ignore whitespace and allow comments (x flag)
+    verbose: bool = false,
+    /// Unicode support (u flag)
+    unicode: bool = true,
 
+    /// Parse flags from a string (e.g., "ims" for ignore_case + multiline + dotall)
     pub fn fromString(str: []const u8) RegexFlags {
         var flags = RegexFlags{};
         for (str) |c| {
@@ -38,11 +57,18 @@ pub const RegexError = error{
 };
 
 /// Represents a capture group within a match
+///
+/// Contains the start and end positions of a matched group,
+/// and an optional name for named capture groups.
 pub const Group = struct {
+    /// Start position in the original text (inclusive)
     start: usize,
+    /// End position in the original text (exclusive)
     end: usize,
+    /// Optional name for named capture groups
     name: ?[]const u8,
 
+    /// Create a new unnamed capture group
     pub fn init(start: usize, end: usize) Group {
         return .{
             .start = start,
@@ -51,6 +77,7 @@ pub const Group = struct {
         };
     }
 
+    /// Create a new named capture group
     pub fn initNamed(start: usize, end: usize, name: []const u8) Group {
         return .{
             .start = start,
@@ -72,11 +99,23 @@ pub const Group = struct {
 };
 
 /// Result of a successful regex match operation
+///
+/// Contains information about the match including the matched text,
+/// capture groups, and positions. Use methods like `get()`, `fullMatch()`,
+/// and `span()` to extract information.
+///
+/// ## Memory Management
+/// The Match owns the groups array and must be deinitialized with `deinit()`.
 pub const Match = struct {
-    text: []const u8, // Original text
-    start: usize, // Match start position
-    end: usize, // Match end position
-    groups: []?Group, // Capture groups (index 0 = full match)
+    /// Original text that was searched
+    text: []const u8,
+    /// Match start position in text (inclusive)
+    start: usize,
+    /// Match end position in text (exclusive)
+    end: usize,
+    /// Capture groups (index 0 is always the full match)
+    groups: []?Group,
+    /// Allocator used for the groups array
     allocator: std.mem.Allocator,
 
     /// Get the matched text for a capture group by index
@@ -178,22 +217,38 @@ pub const Match = struct {
     }
 };
 
-/// Result of subn operation containing replacement text and count
+/// Result of a substitution operation containing replacement text and count
+///
+/// Returned by `subn()` operations. Contains both the modified string
+/// and the count of replacements made.
+///
+/// ## Memory Management
+/// Must be deinitialized with `deinit()` to free the result string.
 pub const SubResult = struct {
+    /// The resulting string after replacements
     result: []u8,
+    /// Number of replacements made
     count: usize,
+    /// Allocator used for the result string
     allocator: std.mem.Allocator,
 
+    /// Free the result string
     pub fn deinit(self: *SubResult) void {
         self.allocator.free(self.result);
     }
 };
 
 /// Internal: Represents the state of a match during VM execution
+///
+/// Used by the VM to track capture groups during NFA simulation.
+/// Not intended for direct use in application code.
 pub const MatchState = struct {
+    /// Array of capture groups (may contain null for unmatched groups)
     capture_groups: []?Group,
+    /// Allocator for the capture groups array
     allocator: std.mem.Allocator,
 
+    /// Create a new match state with space for the specified number of groups
     pub fn init(allocator: std.mem.Allocator, num_groups: usize) RegexError!MatchState {
         const groups = try allocator.alloc(?Group, num_groups);
         @memset(groups, null);
@@ -207,18 +262,21 @@ pub const MatchState = struct {
         self.allocator.free(self.capture_groups);
     }
 
+    /// Set a capture group by index
     pub fn setGroup(self: *MatchState, index: usize, start: usize, end: usize) void {
         if (index < self.capture_groups.len) {
             self.capture_groups[index] = Group.init(start, end);
         }
     }
 
+    /// Set a named capture group by index
     pub fn setGroupNamed(self: *MatchState, index: usize, start: usize, end: usize, name: []const u8) void {
         if (index < self.capture_groups.len) {
             self.capture_groups[index] = Group.initNamed(start, end, name);
         }
     }
 
+    /// Get a capture group by index
     pub fn getGroup(self: *const MatchState, index: usize) ?Group {
         if (index >= self.capture_groups.len) return null;
         return self.capture_groups[index];
@@ -249,17 +307,27 @@ pub const MatchState = struct {
 };
 
 /// Internal: Information about capture groups for the compiler/VM
+///
+/// Used internally to track metadata about capture groups during compilation.
 pub const CaptureGroupInfo = struct {
+    /// Optional name for named groups
     name: ?[]const u8,
+    /// Group index (0 is full match)
     index: usize,
+    /// Whether this group is optional (quantified with ? or {0,n})
     is_optional: bool,
 };
 
 /// Internal: Registry for tracking named capture groups
+///
+/// Maps group names to their indices for lookup during matching.
 pub const GroupRegistry = struct {
+    /// Map of group name -> group index
     groups: std.StringHashMap(usize),
+    /// Allocator for the hash map
     allocator: std.mem.Allocator,
 
+    /// Create a new empty group registry
     pub fn init(allocator: std.mem.Allocator) GroupRegistry {
         return .{
             .groups = std.StringHashMap(usize).init(allocator),
@@ -286,18 +354,29 @@ pub const GroupRegistry = struct {
 };
 
 /// Internal: Result type for VM thread matching
+///
+/// Represents the outcome of executing a VM thread.
 pub const ThreadResult = union(enum) {
+    /// Thread matched successfully
     match: Match,
+    /// Thread failed to match
     fail: void,
-    split: struct { pc: usize, pos: usize }, // For backtracking
+    /// Thread needs to split for backtracking (pc = program counter, pos = text position)
+    split: struct { pc: usize, pos: usize },
 };
 
 /// Internal: VM thread state for NFA simulation
+///
+/// Represents a single thread of execution in the NFA-based VM.
 pub const Thread = struct {
-    pc: usize, // Program counter
-    pos: usize, // Position in input
+    /// Program counter (current instruction)
+    pc: usize,
+    /// Current position in the input text
+    pos: usize,
+    /// Current capture group state
     state: MatchState,
 
+    /// Create a new thread
     pub fn init(pc: usize, pos: usize, state: MatchState) Thread {
         return .{
             .pc = pc,
@@ -328,11 +407,17 @@ pub const Thread = struct {
 };
 
 /// Internal: Position in the input text
+///
+/// Tracks both byte index and line/column for error reporting.
 pub const Position = struct {
+    /// Byte index in the text
     index: usize,
+    /// Line number (1-indexed)
     line: usize,
+    /// Column number (1-indexed)
     column: usize,
 
+    /// Create a position at the given byte index (line/column start at 1)
     pub fn init(index: usize) Position {
         return .{
             .index = index,
@@ -353,17 +438,28 @@ pub const Position = struct {
 };
 
 /// Internal: Match options for fine-tuning matching behavior
+///
+/// Controls where matching starts and ends, and whether the match
+/// must be anchored to the start position.
 pub const MatchOptions = struct {
+    /// Starting position in the text
     start_pos: usize = 0,
+    /// Optional ending position (null = end of text)
     end_pos: ?usize = null,
-    anchored: bool = false, // If true, ^ is implicit at start_pos
+    /// If true, ^ is implicit at start_pos
+    anchored: bool = false,
 };
 
 /// Internal: Track multiple matches for findAll operations
+///
+/// Accumulates matches during findAll operations.
 pub const MatchCollection = struct {
+    /// List of matches
     matches: std.ArrayList(Match),
+    /// Allocator for the match list
     allocator: std.mem.Allocator,
 
+    /// Create a new empty match collection
     pub fn init(allocator: std.mem.Allocator) MatchCollection {
         return .{
             .matches = std.ArrayList(Match).init(allocator),

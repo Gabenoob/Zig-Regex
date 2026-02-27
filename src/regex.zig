@@ -1,4 +1,8 @@
 //! Main public API for the Zig regex library
+//!
+//! This module provides the high-level `Regex` type for compiling patterns
+//! and performing match operations.
+
 const std = @import("std");
 const parser_mod = @import("parser.zig");
 const compiler_mod = @import("compiler.zig");
@@ -122,14 +126,43 @@ fn freeASTNode(allocator: std.mem.Allocator, node: *compiler_mod.ASTNode) void {
     }
 }
 
-/// Main Regex type with full parser/compiler/VM integration
+/// A compiled regular expression for pattern matching
+///
+/// This is the main type for working with regexes. Use `Regex.compile()`
+/// to create a regex from a pattern string, then use methods like `match()`,
+/// `search()`, or `findAll()` to perform matching operations.
+///
+/// ## Memory Management
+///
+/// - `Regex.compile()` duplicates the pattern string internally
+/// - The regex must be deinitialized with `regex.deinit()` when no longer needed
+/// - Match results contain allocated data and must be freed with `match.deinit()`
+///
+/// ## Example
+/// ```zig
+/// var regex = try Regex.compile(allocator, "\\w+@\\w+\\.\\w+");
+/// defer regex.deinit();
+///
+/// if (try regex.search("Contact: user@example.com")) |*m| {
+///     defer m.deinit();
+///     std.debug.print("Found email: {s}\n", .{m.fullMatch()});
+/// }
+/// ```
 pub const Regex = struct {
+    /// Allocator used for all internal allocations
     allocator: std.mem.Allocator,
+    /// The original pattern string (owned)
     pattern: []const u8,
+    /// Compilation/matching flags
     flags: RegexFlags,
+    /// Compiled bytecode (null if not yet compiled)
     compiled: ?InternalCompiledRegex,
+    /// Number of capture groups (including group 0)
     capture_group_count: u32,
 
+    /// Free all resources associated with this regex
+    ///
+    /// This includes the duplicated pattern string and any compiled bytecode.
     pub fn deinit(self: *Regex) void {
         self.allocator.free(self.pattern);
         if (self.compiled) |*c| {
@@ -137,10 +170,46 @@ pub const Regex = struct {
         }
     }
 
+    /// Compile a regex pattern with default flags
+    ///
+    /// The pattern is parsed and compiled to bytecode for efficient matching.
+    /// The pattern string is duplicated and stored internally.
+    ///
+    /// ## Parameters
+    /// - `allocator`: Allocator for internal resources
+    /// - `pattern`: The regex pattern string
+    ///
+    /// ## Errors
+    /// Returns `RegexError` if the pattern is invalid or out of memory.
+    ///
+    /// ## Example
+    /// ```zig
+    /// var regex = try Regex.compile(allocator, "\\d{3}-\\d{4}");
+    /// defer regex.deinit();
+    /// ```
     pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) RegexError!Regex {
         return compileWithFlags(allocator, pattern, RegexFlags{});
     }
 
+    /// Compile a regex pattern with specific flags
+    ///
+    /// ## Parameters
+    /// - `allocator`: Allocator for internal resources
+    /// - `pattern`: The regex pattern string
+    /// - `flags`: Compilation and matching flags
+    ///
+    /// ## Errors
+    /// Returns `RegexError` if the pattern is invalid or out of memory.
+    ///
+    /// ## Example
+    /// ```zig
+    /// var flags = RegexFlags{ .ignore_case = true };
+    /// var regex = try Regex.compileWithFlags(allocator, "hello", flags);
+    /// defer regex.deinit();
+    ///
+    /// // Will match "HELLO", "Hello", etc.
+    /// _ = try regex.match("HELLO");
+    /// ```
     pub fn compileWithFlags(allocator: std.mem.Allocator, pattern: []const u8, flags: RegexFlags) RegexError!Regex {
         // Store the pattern
         const pattern_copy = try allocator.dupe(u8, pattern);
@@ -184,7 +253,28 @@ pub const Regex = struct {
         };
     }
 
-    /// Match at the beginning of text only (with implicit ^ anchor)
+    /// Match the pattern at the beginning of text only
+    ///
+    /// This is equivalent to having an implicit `^` anchor at the start.
+    /// The pattern must match starting at the first character.
+    ///
+    /// ## Parameters
+    /// - `text`: The text to match against
+    ///
+    /// ## Returns
+    /// A `Match` if successful, null otherwise. The match must be deinitialized.
+    ///
+    /// ## Example
+    /// ```zig
+    /// var regex = try Regex.compile(allocator, "hello");
+    /// defer regex.deinit();
+    ///
+    /// // Matches because "hello" is at the start
+    /// _ = try regex.match("hello world");
+    ///
+    /// // Does not match because "hello" is not at the start
+    /// _ = try regex.match("say hello"); // returns null
+    /// ```
     pub fn match(self: *const Regex, text: []const u8) RegexError!?Match {
         if (self.compiled == null) return null;
 
@@ -226,7 +316,27 @@ pub const Regex = struct {
         return null;
     }
 
-    /// Search for match anywhere in text
+    /// Search for a match anywhere in the text
+    ///
+    /// Unlike `match()`, this scans through the text looking for the pattern
+    /// at any position.
+    ///
+    /// ## Parameters
+    /// - `text`: The text to search
+    ///
+    /// ## Returns
+    /// A `Match` if found, null otherwise. The match must be deinitialized.
+    ///
+    /// ## Example
+    /// ```zig
+    /// var regex = try Regex.compile(allocator, "\\d+");
+    /// defer regex.deinit();
+    ///
+    /// if (try regex.search("abc123def")) |*m| {
+    ///     defer m.deinit();
+    ///     std.debug.print("Found: {s}\n", .{m.fullMatch()}); // "123"
+    /// }
+    /// ```
     pub fn search(self: *const Regex, text: []const u8) RegexError!?Match {
         if (self.compiled == null) return null;
 
@@ -265,7 +375,32 @@ pub const Regex = struct {
         return null;
     }
 
-    /// Find all non-overlapping matches
+    /// Find all non-overlapping matches in the text
+    ///
+    /// Returns a slice of `Match` objects. Each match must be deinitialized,
+    /// and the slice itself must be freed with `allocator.free(matches)`.
+    ///
+    /// ## Parameters
+    /// - `text`: The text to search
+    ///
+    /// ## Returns
+    /// A slice of matches (may be empty). Caller owns the returned memory.
+    ///
+    /// ## Example
+    /// ```zig
+    /// var regex = try Regex.compile(allocator, "\\w+");
+    /// defer regex.deinit();
+    ///
+    /// const matches = try regex.findAll("hello world");
+    /// defer {
+    ///     for (matches) |*m| m.deinit();
+    ///     allocator.free(matches);
+    /// }
+    ///
+    /// for (matches) |m| {
+    ///     std.debug.print("Word: {s}\n", .{m.fullMatch()});
+    /// }
+    /// ```
     pub fn findAll(self: *const Regex, text: []const u8) RegexError![]Match {
         if (self.compiled == null) return &[_]Match{};
 
@@ -315,7 +450,27 @@ pub const Regex = struct {
         return matches;
     }
 
-    /// Replace first match with replacement text
+    /// Replace the first match with replacement text
+    ///
+    /// Returns an allocated string with the replacement made.
+    /// If no match is found, returns a copy of the original text.
+    ///
+    /// ## Parameters
+    /// - `replacement`: The text to replace the match with
+    /// - `text`: The original text
+    ///
+    /// ## Returns
+    /// An allocated string. Caller owns the returned memory.
+    ///
+    /// ## Example
+    /// ```zig
+    /// var regex = try Regex.compile(allocator, "cat");
+    /// defer regex.deinit();
+    ///
+    /// const result = try regex.sub("dog", "the cat sat");
+    /// defer allocator.free(result);
+    /// // result == "the dog sat"
+    /// ```
     pub fn sub(self: *const Regex, replacement: []const u8, text: []const u8) RegexError![]u8 {
         var result: std.ArrayList(u8) = .empty;
         defer result.deinit(self.allocator);
@@ -337,6 +492,25 @@ pub const Regex = struct {
     }
 
     /// Replace all matches with replacement text
+    ///
+    /// Similar to `sub()` but replaces every non-overlapping occurrence.
+    ///
+    /// ## Parameters
+    /// - `replacement`: The text to replace each match with
+    /// - `text`: The original text
+    ///
+    /// ## Returns
+    /// An allocated string. Caller owns the returned memory.
+    ///
+    /// ## Example
+    /// ```zig
+    /// var regex = try Regex.compile(allocator, "a");
+    /// defer regex.deinit();
+    ///
+    /// const result = try regex.subAll("o", "banana");
+    /// defer allocator.free(result);
+    /// // result == "bonono"
+    /// ```
     pub fn subAll(self: *const Regex, replacement: []const u8, text: []const u8) RegexError![]u8 {
         const matches = try self.findAll(text);
         defer {
@@ -362,7 +536,29 @@ pub const Regex = struct {
         return result.toOwnedSlice(self.allocator);
     }
 
-    /// Split text by regex matches
+    /// Split the text by regex matches
+    ///
+    /// Returns a slice of strings split by the pattern. The matches themselves
+    /// are not included in the result.
+    ///
+    /// ## Parameters
+    /// - `text`: The text to split
+    ///
+    /// ## Returns
+    /// A slice of strings. Caller owns the returned memory (both slice and contents).
+    ///
+    /// ## Example
+    /// ```zig
+    /// var regex = try Regex.compile(allocator, "\\s+");
+    /// defer regex.deinit();
+    ///
+    /// const parts = try regex.split("hello   world  test");
+    /// defer {
+    ///     for (parts) |p| allocator.free(p);
+    ///     allocator.free(parts);
+    /// }
+    /// // parts == .{ "hello", "world", "test" }
+    /// ```
     pub fn split(self: *const Regex, text: []const u8) RegexError![][]u8 {
         const matches = try self.findAll(text);
         defer {
@@ -388,12 +584,31 @@ pub const Regex = struct {
     }
 
     /// Returns the number of capture groups (including group 0)
+    ///
+    /// Group 0 always represents the full match.
     pub fn groupCount(self: Regex) usize {
         return self.capture_group_count;
     }
 };
 
-/// Escape special regex characters
+/// Escape special regex characters in a string
+///
+/// Escapes the following characters with a backslash:
+/// `\`, `^`, `$`, `.`, `|`, `?`, `*`, `+`, `(`, `)`, `[`, `]`, `{`, `}`
+///
+/// ## Parameters
+/// - `allocator`: Allocator for the result string
+/// - `text`: The text to escape
+///
+/// ## Returns
+/// An allocated escaped string. Caller owns the returned memory.
+///
+/// ## Example
+/// ```zig
+/// const escaped = try escape(allocator, "hello.world");
+/// defer allocator.free(escaped);
+/// // escaped == "hello\\.world"
+/// ```
 pub fn escape(allocator: std.mem.Allocator, text: []const u8) RegexError![]u8 {
     var result: std.ArrayList(u8) = .empty;
     defer result.deinit(allocator);
