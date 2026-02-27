@@ -20,7 +20,7 @@ A regular expression library for Zig, inspired by Python's `re` module. This lib
 Run the following command in your project:
 
 ```bash
-zig fetch --save "https://github.com/Gabenoob/Zig-Regex/archive/refs/tags/0.1.0.tar.gz"
+zig fetch --save "https://github.com/Gabenoob/Zig-Regex/archive/refs/tags/0.1.1.tar.gz"
 ```
 
 Then in `build.zig`, add the dependency to your executable or library:
