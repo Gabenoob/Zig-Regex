@@ -82,10 +82,10 @@ pub fn main() !void {
         var re = try regex.Regex.compile(allocator, "world");
         defer re.deinit();
 
-        const result = try re.sub("universe", "hello world");
+        const result = try re.subAll("universe", "world hello world");
         defer allocator.free(result);
 
-        std.debug.print("   'hello world' -> '{s}'\n", .{result});
+        std.debug.print("   'world hello world' -> '{s}'\n", .{result});
     }
 
     // Example 6: Split

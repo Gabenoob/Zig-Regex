@@ -393,11 +393,17 @@ const Parser = struct {
 
     fn parseAtom(self: *Parser) ParserError!*Node {
         switch (self.current.type) {
-            .Literal, .Comma => {
+            .Literal => {
                 const ch = self.current.char;
                 self.advance();
                 const node = try self.allocator.create(Node);
                 node.* = .{ .Literal = ch };
+                return node;
+            },
+            .Comma => {
+                self.advance();
+                const node = try self.allocator.create(Node);
+                node.* = .{ .Literal = ',' };
                 return node;
             },
             .Escape => {
@@ -471,18 +477,16 @@ const Parser = struct {
                 return node;
             },
             's' => {
-                // Whitespace: space, tab, newline, carriage return, form feed
                 const ranges = try self.allocator.alloc(CharRange, 5);
                 ranges[0] = .{ .start = ' ', .end = ' ' };
                 ranges[1] = .{ .start = '\t', .end = '\t' };
                 ranges[2] = .{ .start = '\n', .end = '\n' };
                 ranges[3] = .{ .start = '\r', .end = '\r' };
-                ranges[4] = .{ .start = '\x0c', .end = '\x0c' }; // form feed
+                ranges[4] = .{ .start = '\x0c', .end = '\x0c' };
                 node.* = .{ .CharacterClass = .{ .ranges = ranges, .negated = false } };
                 return node;
             },
             'S' => {
-                // Non-whitespace (negated)
                 const ranges = try self.allocator.alloc(CharRange, 5);
                 ranges[0] = .{ .start = ' ', .end = ' ' };
                 ranges[1] = .{ .start = '\t', .end = '\t' };
