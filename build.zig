@@ -41,4 +41,19 @@ pub fn build(b: *std.Build) void {
     }) });
     // Depend on all tests
     test_step.dependOn(&b.addRunArtifact(tests).step);
+
+    // Benchmark executable
+    const bench_exe = b.addExecutable(.{
+        .name = "regex-bench",
+        .root_module = b.createModule(.{
+            .root_source_file = b.path("bench.zig"),
+            .target = target,
+            .optimize = optimize,
+            .imports = &.{.{ .name = "re", .module = regex_mod }},
+        }),
+    });
+
+    const run_bench = b.addRunArtifact(bench_exe);
+    const bench_step = b.step("bench", "Run performance benchmark");
+    bench_step.dependOn(&run_bench.step);
 }
