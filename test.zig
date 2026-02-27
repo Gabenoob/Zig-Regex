@@ -6,4 +6,5 @@ test {
     _ = @import("src/regex.zig");
     _ = @import("src/match.zig");
     _ = @import("src/regex.zig");
+    _ = @import("src/regex_tests.zig");
 }
