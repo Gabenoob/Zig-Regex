@@ -1,79 +1,89 @@
-# Zig Regex Module - Project Architecture
+# Zig Regex - Project Architecture
 
 ## Overview
-A Zig regular expression module inspired by Python's `re` module.
 
-## API Interface (Python re-inspired)
+Zig Regex is a regular expression library for Zig, inspired by Python's `re` module. It provides a complete regex implementation with pattern matching, capture groups, and text manipulation operations.
 
-### Core Functions
-```zig
-// Compile pattern
-pub fn compile(pattern: []const u8) RegexError!Regex
-pub fn compileWithFlags(pattern: []const u8, flags: RegexFlags) RegexError!Regex
+## Architecture
 
-// Match operations
-pub fn match(regex: *const Regex, text: []const u8) RegexError!?Match
-pub fn search(regex: *const Regex, text: []const u8) RegexError!?Match
-pub fn findAll(regex: *const Regex, text: []const u8, allocator: std.mem.Allocator) RegexError![]Match
+The library follows a multi-stage pipeline architecture:
 
-// Replace operations
-pub fn sub(regex: *const Regex, replacement: []const u8, text: []const u8, allocator: std.mem.Allocator) RegexError![]u8
-pub fn subn(regex: *const Regex, replacement: []const u8, text: []const u8, allocator: std.mem.Allocator) RegexError!SubResult
-
-// Split operation
-pub fn split(regex: *const Regex, text: []const u8, allocator: std.mem.Allocator) RegexError![][]u8
-
-// Escape utility
-pub fn escape(text: []const u8, allocator: std.mem.Allocator) RegexError![]u8
+```
+Pattern String -> Parser -> AST -> Compiler -> Bytecode -> VM -> Match Result
 ```
 
-### Types
+### Module Structure
+
+| Module | File | Purpose |
+|--------|------|---------|
+| **Public API** | `regex.zig` (root) | Re-exports all public types and functions |
+| **Regex** | `src/regex.zig` | High-level `Regex` struct, combines all components |
+| **Parser** | `src/parser.zig` | Tokenizes patterns and builds an Abstract Syntax Tree (AST) |
+| **Compiler** | `src/compiler.zig` | Compiles AST to bytecode instructions |
+| **VM** | `src/vm.zig` | Virtual machine that executes compiled regex programs using NFA simulation |
+| **Match** | `src/match.zig` | Match result types, group extraction, capture handling |
+
+## Public API
+
+### Core Types
+
 ```zig
 pub const Regex = struct {
-    pattern: []const u8,
-    flags: RegexFlags,
-    program: []Instruction,  // Compiled bytecode
-    capture_groups: u32,
+    /// Compile a regex pattern with default flags
+    pub fn compile(allocator: std.mem.Allocator, pattern: []const u8) RegexError!Regex;
     
-    // Methods
-    pub fn deinit(self: *Regex, allocator: std.mem.Allocator) void;
+    /// Compile with specific flags
+    pub fn compileWithFlags(allocator: std.mem.Allocator, pattern: []const u8, flags: RegexFlags) RegexError!Regex;
+    
+    /// Free all resources
+    pub fn deinit(self: *Regex) void;
+    
+    // Matching operations
     pub fn match(self: *const Regex, text: []const u8) RegexError!?Match;
     pub fn search(self: *const Regex, text: []const u8) RegexError!?Match;
-    pub fn findAll(self: *const Regex, text: []const u8, allocator: std.mem.Allocator) RegexError![]Match;
-    pub fn sub(self: *const Regex, replacement: []const u8, text: []const u8, allocator: std.mem.Allocator) RegexError![]u8;
-    pub fn subn(self: *const Regex, replacement: []const u8, text: []const u8, allocator: std.mem.Allocator) RegexError!SubResult;
-    pub fn split(self: *const Regex, text: []const u8, allocator: std.mem.Allocator) RegexError![][]u8;
+    pub fn findAll(self: *const Regex, text: []const u8) RegexError![]Match;
+    
+    // Text manipulation
+    pub fn sub(self: *const Regex, replacement: []const u8, text: []const u8) RegexError![]u8;
+    pub fn subAll(self: *const Regex, replacement: []const u8, text: []const u8) RegexError![]u8;
+    pub fn split(self: *const Regex, text: []const u8) RegexError![][]u8;
+    
+    /// Returns the number of capture groups (including group 0)
+    pub fn groupCount(self: Regex) usize;
 };
 
 pub const Match = struct {
-    text: []const u8,           // Original text
-    start: usize,               // Match start position
-    end: usize,                 // Match end position
-    groups: []?Group,           // Capture groups (0 = full match)
-    
+    /// Get the matched text for a capture group by index
     pub fn get(self: *const Match, group_index: usize) ?[]const u8;
+    
+    /// Get the matched text for a named capture group
     pub fn getNamed(self: *const Match, name: []const u8) ?[]const u8;
+    
+    /// Get the span (start, end) of the full match
     pub fn span(self: *const Match) struct { usize, usize };
-    pub fn groupsSlice(self: *const Match) []const ?[]const u8;
-};
-
-pub const Group = struct {
-    start: usize,
-    end: usize,
-    name: ?[]const u8,
-};
-
-pub const SubResult = struct {
-    result: []u8,
-    count: usize,
+    
+    /// Get a span for a specific group by index
+    pub fn groupSpan(self: *const Match, group_index: usize) ?struct { usize, usize };
+    
+    /// Returns the full matched text
+    pub fn fullMatch(self: *const Match) []const u8;
+    
+    /// Returns the length of the match
+    pub fn len(self: *const Match) usize;
+    
+    /// Returns the number of capture groups
+    pub fn groupCount(self: *const Match) usize;
+    
+    /// Release all resources
+    pub fn deinit(self: *const Match) void;
 };
 
 pub const RegexFlags = packed struct {
-    ignore_case: bool = false,      // i flag
-    multiline: bool = false,        // m flag (^/$ match line boundaries)
-    dotall: bool = false,           // s flag (. matches newlines)
-    verbose: bool = false,          // x flag (whitespace ignored)
-    unicode: bool = true,           // u flag (unicode support)
+    ignore_case: bool = false,
+    multiline: bool = false,
+    dotall: bool = false,
+    verbose: bool = false,
+    unicode: bool = true,
 };
 
 pub const RegexError = error{
@@ -83,70 +93,107 @@ pub const RegexError = error{
     InvalidEscape,
     InvalidGroup,
     InvalidRange,
+    InvalidQuantifier,
+    InvalidBackreference,
     OutOfMemory,
 };
 ```
 
-## Module Architecture
+### Utility Functions
 
-### 1. Parser Module (`parser.zig`)
-- Tokenizes regex patterns
-- Builds Abstract Syntax Tree (AST)
-- Handles: literals, quantifiers, groups, character classes, anchors
-
-### 2. Compiler Module (`compiler.zig`)
-- Compiles AST to bytecode instructions
-- Instruction set: Char, Match, Split, Jump, Save, Any, Range, etc.
-- Optimizations: instruction fusion, peephole optimization
-
-### 3. VM/Engine Module (`vm.zig`)
-- Executes compiled bytecode
-- Backtracking NFA simulation
-- Thread management for parallel path exploration
-
-### 4. Match Module (`match.zig`)
-- Match result handling
-- Group extraction
-- Named group support
-
-### 5. Main API Module (`regex.zig`)
-- Public API surface
-- Convenience functions
-- Error handling
-
-### 6. Utils Module (`utils.zig`)
-- Common utilities
-- Escape helpers
-- String operations
-
-## Bytecode Instructions
+```zig
+/// Escape special regex characters in a string
+pub fn escape(allocator: std.mem.Allocator, text: []const u8) RegexError![]u8;
 ```
-Char(c)       - Match literal character c
-Any           - Match any character (except newline unless dotall)
-Range(a,b)    - Match character in range [a-b]
-Class(bitmap) - Match character in character class
-Split(x,y)    - Try both paths (non-deterministic)
-Jump(x)       - Jump to instruction x
-Save(n)       - Save position to capture group n
-Match         - Successful match
-LineStart     - Match ^ (start of string/line)
-LineEnd       - Match $ (end of string/line)
-WordBoundary  - Match word boundary
-Backref(n)    - Match previously captured group n
-```
+
+## Bytecode Instruction Set
+
+The compiler generates bytecode with these instruction types:
+
+| Instruction | Description |
+|-------------|-------------|
+| `Char(c)` | Match literal character c |
+| `Any` | Match any character |
+| `Range(a,b)` | Match character in range [a-b] |
+| `Class(bitmap)` | Match character in character class |
+| `Split(x,y)` | Try both paths (non-deterministic choice) |
+| `Jump(x)` | Jump to instruction x |
+| `Save(n)` | Save position to capture group n |
+| `Match` | Successful match |
+| `LineStart` | Match ^ anchor |
+| `LineEnd` | Match $ anchor |
+| `WordBoundary` | Match word boundary |
+| `Backref(n)` | Match previously captured group n |
 
 ## Directory Structure
+
 ```
-regex/
-├── regex.zig       # Main public API
-├── parser.zig      # Pattern parser
-├── compiler.zig    # Bytecode compiler
-├── vm.zig          # Virtual machine
-├── match.zig       # Match result types
-├── utils.zig       # Utilities
-└── tests/
-    ├── test_parser.zig
-    ├── test_compiler.zig
-    ├── test_vm.zig
-    └── test_integration.zig
+.
+├── build.zig           # Build configuration
+├── build.zig.zon       # Package manifest
+├── regex.zig           # Public API entry point
+├── test.zig            # Test runner entry point
+├── README.md           # User documentation
+├── ARCHITECTURE.md     # This file
+├── src/
+│   ├── regex.zig       # High-level Regex API
+│   ├── parser.zig      # Pattern parser with arena allocation
+│   ├── compiler.zig    # Bytecode compiler
+│   ├── vm.zig          # Virtual machine (NFA executor)
+│   ├── match.zig       # Match types and utilities
+│   └── regex_tests.zig # Comprehensive test suite
+└── examples/
+    └── basic.zig       # Usage examples
 ```
+
+## Implementation Details
+
+### Parser
+
+The parser tokenizes regex patterns and builds an Abstract Syntax Tree (AST). Key features:
+
+- **Arena Allocation**: Uses an internal arena allocator for parsing, then clones the result to prevent memory leaks on error paths
+- **Error Recovery**: Returns specific error types (`UnmatchedParenthesis`, `UnmatchedBracket`, etc.)
+- **Supported Syntax**: Literals, quantifiers (`*`, `+`, `?`, `{n,m}`), groups (capturing, non-capturing, named), character classes, anchors, backreferences
+
+### Compiler
+
+Converts the AST to bytecode instructions:
+
+- Flattens the tree structure into a linear instruction sequence
+- Handles nested structures via `Split` and `Jump` instructions
+- Supports capture groups with `Save` instructions
+
+### VM
+
+Executes compiled bytecode using a backtracking NFA simulation:
+
+- Thread-based execution model
+- Leftmost-longest match semantics
+- Handles capture groups and backreferences
+
+### Memory Management
+
+All regex operations require an allocator parameter:
+
+- `Regex.compile()` duplicates the pattern string internally
+- `Match` results contain allocated data and must be freed with `match.deinit()`
+- `Regex.deinit()` frees the compiled pattern and internal resources
+- ArrayList uses `.empty` initialization pattern with explicit allocator on operations
+
+## Testing
+
+The library includes a comprehensive test suite (`src/regex_tests.zig`) covering:
+
+- Basic literal matching
+- Character classes (`[abc]`, `[^abc]`, `[a-z]`, `\d`, `\w`, `\s`, etc.)
+- Quantifiers (`*`, `+`, `?`, `{n,m}`)
+- Anchors (`^`, `$`, `\b`)
+- Groups (capturing, non-capturing, nested)
+- Alternation (`|`)
+- Backreferences (`\1`, `\2`)
+- Search, findAll, sub, subAll, split operations
+- Real-world patterns (email, dates, etc.)
+- Edge cases and error handling
+
+Run tests with: `zig build test`
